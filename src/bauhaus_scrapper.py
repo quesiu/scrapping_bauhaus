@@ -16,7 +16,7 @@ from fuzzywuzzy import fuzz
 # Tutorial: https://github.com/plamere/spotipy/blob/master/README.md
 # Use spotipy and BS to create Spotify playlist: https://towardsdatascience.com/using-python-to-create-spotify-playlists-of-the-samples-on-an-album-e3f20187ee5e
 
-# Parameters to play with to raise/decrease accuracy
+# Parameters to play with to raise/decrease accuracy and overall number of detected songs
 QUERY_LIMIT = 10
 PERCENTAGE_TOLERANCY_BAND = 90
 PERCENTAGE_TOLERANCY_SONG = 65
