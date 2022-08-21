@@ -1,19 +1,25 @@
-from http import client
-from itertools import zip_longest
+# Standard Python Libraries
+import re
 import sys
-from base_scrapper import BaseScrapper
-from bs4 import BeautifulSoup as bs, ResultSet
-import spotipy
-import spotipy.util as util
-from spotipy.oauth2 import SpotifyClientCredentials
-from spotipy.oauth2 import SpotifyOAuth
 from datetime import date
+from itertools import zip_longest
+# Custom Libraries
+from base_scrapper import BaseScrapper
+# Librairies from pip
+import unidecode
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+from bs4 import BeautifulSoup as bs, ResultSet
 from fuzzywuzzy import fuzz
-
 
 # Spotipy docs: https://spotipy.readthedocs.io/en/master/#
 # Tutorial: https://github.com/plamere/spotipy/blob/master/README.md
 # Use spotipy and BS to create Spotify playlist: https://towardsdatascience.com/using-python-to-create-spotify-playlists-of-the-samples-on-an-album-e3f20187ee5e
+
+# Parameters to play with to raise/decrease accuracy
+QUERY_LIMIT = 10
+PERCENTAGE_TOLERANCY_BAND = 90
+PERCENTAGE_TOLERANCY_SONG = 65
 
 def grouper(iterable, n):
         args = [iter(iterable)] * n
@@ -25,7 +31,7 @@ class BauhausScrapper(BaseScrapper):
         self.dict_bands = {}
 
     def extract_bands_and_songs(self):
-        soup = bs(self.return_content(), features='html.parser')  
+        soup = bs(self.return_content(), features='html.parser')
         results = soup.find('div', class_="entry-content")
         bands = results.find_all('h4')
         songs_lists = results.find_all('ul')
@@ -35,12 +41,17 @@ class BauhausScrapper(BaseScrapper):
         else:
             print("Could not find same number of bands and songs, abort process. Check html's source.")
 
+    def remove_useless_title_info(self, title:str):
+        # Matches anything between parenthesis at the end of a title (+ potential spaces) and remove it
+        return re.sub(r'(.+)(\(.*\) *)$', r'\1', title)
+        
+
     def scrap_bands_and_songs(self, bands:ResultSet, songs_lists:ResultSet):
         self.total_number_tracks = 0
         for (band, songs_list) in zip(bands, songs_lists):
             songs = []
             for song in songs_list:
-                songs.append(song.text)
+                songs.append(self.remove_useless_title_info(song.text))
                 self.total_number_tracks += 1
             self.dict_bands[band.text] = songs
 
@@ -88,19 +99,25 @@ class BauhausScrapper(BaseScrapper):
 
         for band, songs in self.dict_bands.items():
             for song in songs:
-                # print(f"{band} - {song}")
-                results = self.sp.search(q=f"{song} {band} ", limit=10, type='track') #get 5 responses since first isn't always accurate
+                # Remove potential space characters for bands (\xa0)
+                band = unidecode.unidecode(band)
+                # Use Spotify search API with artists and track name
+                results = self.sp.search(q=f"{band} {song} ", limit=QUERY_LIMIT, type='track') #get 5 responses since first isn't always accurate
                 if results['tracks']['total'] == 0: #if track isn't on spotify as queried, go to next track
                     print(f"Could not add following track: {band} - {song}")
                     continue
                 else:
                     for j in range(len(results['tracks']['items'])):
-                        if fuzz.partial_ratio(results['tracks']['items'][j]['artists'][0]['name'], band) > 90 and fuzz.partial_ratio(results['tracks']['items'][j]['name'], song) > 90 : #get right response by matching on artist and title
+                        current_querried_band = results['tracks']['items'][j]['artists'][0]['name']
+                        current_querried_song = results['tracks']['items'][j]['name']
+                        if fuzz.partial_token_set_ratio(current_querried_band, band) > PERCENTAGE_TOLERANCY_BAND and fuzz.partial_token_set_ratio(current_querried_song, song) > PERCENTAGE_TOLERANCY_SONG : #get right response by matching on artist and title
                             track_ids.append(results['tracks']['items'][j]['id']) #append track id
                             break #don't want repeats of a sample ex: different versions
                         else:
                             # print(f"Could not add following track: {band} - {song}")
                             continue
+                    else:
+                        print(f"Could not add following track: {band} - {song}")
         print("Got TrackIDs")
         print(f"Grasped a total of {len(track_ids)} tracks out of {self.total_number_tracks}")
         self.track_ids = track_ids
