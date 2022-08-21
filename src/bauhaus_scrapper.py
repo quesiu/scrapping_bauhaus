@@ -1,4 +1,5 @@
 from http import client
+from itertools import zip_longest
 import sys
 from base_scrapper import BaseScrapper
 from bs4 import BeautifulSoup as bs, ResultSet
@@ -6,9 +7,17 @@ import spotipy
 import spotipy.util as util
 from spotipy.oauth2 import SpotifyClientCredentials
 from spotipy.oauth2 import SpotifyOAuth
+from datetime import date
+from fuzzywuzzy import fuzz
+
 
 # Spotipy docs: https://spotipy.readthedocs.io/en/master/#
 # Tutorial: https://github.com/plamere/spotipy/blob/master/README.md
+# Use spotipy and BS to create Spotify playlist: https://towardsdatascience.com/using-python-to-create-spotify-playlists-of-the-samples-on-an-album-e3f20187ee5e
+
+def grouper(iterable, n):
+        args = [iter(iterable)] * n
+        return zip_longest(*args)
 
 class BauhausScrapper(BaseScrapper):
     def __init__(self, url: str):
@@ -27,52 +36,77 @@ class BauhausScrapper(BaseScrapper):
             print("Could not find same number of bands and songs, abort process. Check html's source.")
 
     def scrap_bands_and_songs(self, bands:ResultSet, songs_lists:ResultSet):
+        self.total_number_tracks = 0
         for (band, songs_list) in zip(bands, songs_lists):
             songs = []
             for song in songs_list:
                 songs.append(song.text)
+                self.total_number_tracks += 1
             self.dict_bands[band.text] = songs
 
     def export_to_spotify(self):
         self.connect_to_spotify()
-        return 1
+        self.get_track_ids()
+        self.create_playlist_with_songs()
 
     def connect_to_spotify(self):
         if len(sys.argv) > 3:
-            username = sys.argv[1]
+            self.username = sys.argv[1]
             client_id = sys.argv[2]
             client_secret = sys.argv[3]
 
             scope = 'playlist-modify-public'
             
-            sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=client_id,
+            # Connect to Spotify via spotipy using Authorization Code Flow
+            # Requires to connect account with https://developer.spotify.com/
+            # to get Client ID and Secret (to be passed as arguments)
+            # as well as adding http://localhost:8888/callback to Spotify dashboard's Redirect URIs
+            self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=client_id,
                                                client_secret=client_secret,
                                                redirect_uri=f"http://localhost:8888/callback",
-                                               scope="user-library-read"))
-
-            results = sp.current_user_saved_tracks()
-            for idx, item in enumerate(results['items']):
-                track = item['track']
-                print(idx, track['artists'][0]['name'], " – ", track['name'])
-            # sp = spotipy.Spotify(auth=token)
-
-
-            # auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-            # sp = spotipy.Spotify(auth_manager=auth_manager)
-
-            # playlist_name = f"Bauhaus Roppongi"
-            # sp.user_playlist_create(username, name=playlist_name)
-            # print(sp)
-            # token = util.prompt_for_user_token(
-            #     username, scope, 
-            #     client_id=client_id, client_secret=client_secret, redirect_uri='http://localhost') 
-            # sp = spotipy.Spotify(auth=token)
+                                               scope=scope))
         else:
             print("Usage: %s username playlist_id track_id ..." % (sys.argv[0],))
             sys.exit()
 
+    def create_playlist_with_songs(self):
+        # Create new playlist with current day in title; will NOT erase existing ones
+        playlist_name = f"Bauhaus Roppongi (last updated {date.today()})"
+        playlist_id = self.sp.user_playlist_create(self.username, name=playlist_name)
+        # Get created playlist id
+        playlist_id = playlist_id['id']
+        
+        # Add songs 100 by 100 because spotipy is limited by that
+        tracks_groups = grouper(self.track_ids, 100)
+        for tracks in tracks_groups:
+            # Filter None items out
+            tracks = list(filter(None, tracks))
+            self.sp.user_playlist_add_tracks(self.username, playlist_id, tracks)
+
+    def get_track_ids(self):
+        track_ids = []
+
+        for band, songs in self.dict_bands.items():
+            for song in songs:
+                # print(f"{band} - {song}")
+                results = self.sp.search(q=f"{song} {band} ", limit=10, type='track') #get 5 responses since first isn't always accurate
+                if results['tracks']['total'] == 0: #if track isn't on spotify as queried, go to next track
+                    print(f"Could not add following track: {band} - {song}")
+                    continue
+                else:
+                    for j in range(len(results['tracks']['items'])):
+                        if fuzz.partial_ratio(results['tracks']['items'][j]['artists'][0]['name'], band) > 90 and fuzz.partial_ratio(results['tracks']['items'][j]['name'], song) > 90 : #get right response by matching on artist and title
+                            track_ids.append(results['tracks']['items'][j]['id']) #append track id
+                            break #don't want repeats of a sample ex: different versions
+                        else:
+                            # print(f"Could not add following track: {band} - {song}")
+                            continue
+        print("Got TrackIDs")
+        print(f"Grasped a total of {len(track_ids)} tracks out of {self.total_number_tracks}")
+        self.track_ids = track_ids
+
+
 if __name__ == "__main__":
     scrapper = BauhausScrapper("https://rockbarbauhaus.com/about/song-list/")
     scrapper.extract_bands_and_songs()
-    scrapper.connect_to_spotify()
-    print(1)
+    scrapper.export_to_spotify()
